@@ -20,6 +20,7 @@
 #include <osg/BlendColor>
 #include <osg/BlendFunc>
 #include <osg/ValueObject>
+#include <osg/TexEnv>
 
 #include <fstream>
 #include <sstream>
@@ -166,6 +167,7 @@ public:
     JSONObject* createJSONCullFace(osg::CullFace* sa);
     JSONObject* createJSONBlendColor(osg::BlendColor* sa);
     JSONObject* createJSONBlendFunc(osg::BlendFunc* sa);
+    JSONObject* createJSONTexEnv(osg::TexEnv* te);
 
     JSONObject* createJSONBufferArray(osg::Array* array, osg::Geometry* geom = 0);
     JSONObject* createJSONDrawElements(osg::DrawArrays* drawArray, osg::Geometry* geom = 0);

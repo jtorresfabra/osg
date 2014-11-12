@@ -1,3 +1,5 @@
+#include <iomanip>
+
 #include "WriteVisitor"
 #include <osgDB/WriteFile>
 #include <osgDB/FileUtils>
@@ -10,7 +12,7 @@
 #include <osg/Material>
 #include <osg/BlendFunc>
 #include <osgSim/ShapeAttribute>
-
+#include <osg/TexEnv>
 #include "Base64"
 
 
@@ -98,20 +100,6 @@ void translateObject(JSONObject* json, osg::Object* osg)
     }
 }
 
-
-void getStringifiedUserValue(osg::Object* o, std::string& name, std::string& value) {
-    if(getStringifiedUserValue<std::string>(o, name, value)) return;
-    if(getStringifiedUserValue<char>(o, name, value)) return;
-    if(getStringifiedUserValue<bool>(o, name, value)) return;
-    if(getStringifiedUserValue<short>(o, name, value)) return;
-    if(getStringifiedUserValue<unsigned short>(o, name, value)) return;
-    if(getStringifiedUserValue<int>(o, name, value)) return;
-    if(getStringifiedUserValue<unsigned int>(o, name, value)) return;
-    if(getStringifiedUserValue<float>(o, name, value)) return;
-    if(getStringifiedUserValue<double>(o, name, value)) return;
-}
-
-
 template<typename T>
 bool getStringifiedUserValue(osg::Object* o, std::string& name, std::string& value) {
     osg::TemplateValueObject<T>* vo = dynamic_cast< osg::TemplateValueObject<T>* >(o);
@@ -125,6 +113,31 @@ bool getStringifiedUserValue(osg::Object* o, std::string& name, std::string& val
     return false;
 }
 
+template<>
+bool getStringifiedUserValue<double>(osg::Object* o, std::string& name, std::string& value) {
+    osg::TemplateValueObject<double>* vo = dynamic_cast< osg::TemplateValueObject<double>* >(o);
+    if (vo) {
+        std::ostringstream oss;
+        // Change default behaviour in stringstream to use up to 17 fixed decimals for doubles
+        oss << std::fixed << std::setprecision(17) << vo->getValue();
+        name = vo->getName();
+        value = oss.str();
+        return true;
+    }
+    return false;
+}
+
+void getStringifiedUserValue(osg::Object* o, std::string& name, std::string& value) {
+    if(getStringifiedUserValue<std::string>(o, name, value)) return;
+    if(getStringifiedUserValue<char>(o, name, value)) return;
+    if(getStringifiedUserValue<bool>(o, name, value)) return;
+    if(getStringifiedUserValue<short>(o, name, value)) return;
+    if(getStringifiedUserValue<unsigned short>(o, name, value)) return;
+    if(getStringifiedUserValue<int>(o, name, value)) return;
+    if(getStringifiedUserValue<unsigned int>(o, name, value)) return;
+    if(getStringifiedUserValue<float>(o, name, value)) return;
+    if(getStringifiedUserValue<double>(o, name, value)) return;
+}
 
 static JSONValue<std::string>* getBlendFuncMode(GLenum mode) {
     switch (mode) {
@@ -652,20 +665,66 @@ JSONObject* WriteVisitor::createJSONPagedLOD(osg::PagedLOD *plod)
         ss << i;
         std::string str = ss.str();
         // We need to convert first from osg format to osgjs format.
-        osg::ref_ptr<osg::Node> n = osgDB::readNodeFile(plod->getFileName(i)+".gles");
-        if (n)
+        if ( osgDB::getFileExtension(plod->getFileName(i))!="osgjs")
         {
-            std::string filename(osgDB::getStrippedName(plod->getFileName(i))+".osgjs");
-            osgDB::writeNodeFile(*n,filename);
-            fileObject->getMaps()[str] =  new JSONValue<std::string>(filename);
+              osg::ref_ptr<osg::Node> n = osgDB::readNodeFile(plod->getFileName(i)+".gles");
+              if (n)
+              {
+                  std::string filename(osgDB::getStrippedName(plod->getFileName(i))+".osgjs");
+                  osgDB::writeNodeFile(*n,filename);
+                  fileObject->getMaps()[str] =  new JSONValue<std::string>(filename);
+              }
+              else
+                fileObject->getMaps()[str] =  new JSONValue<std::string>("");
+        } else {
+          // The children are already in osgjs format  
+          fileObject->getMaps()[str] =  new JSONValue<std::string>(osgDB::getSimpleFileName(plod->getFileName(i)));
         }
-        else
-            fileObject->getMaps()[str] =  new JSONValue<std::string>("");
-     }
+    }
     jsonPlod->getMaps()["RangeDataList"] = fileObject;
 
     return jsonPlod;
 }
+JSONObject* WriteVisitor::createJSONTexEnv(osg::TexEnv* texEnv)
+{
+
+    if (!texEnv) {
+        return 0;
+    }
+
+    if (_maps.find(texEnv) != _maps.end())
+    return _maps[texEnv]->getShadowObject();
+
+  osg::ref_ptr<JSONObject> json = new JSONObject;
+  json->addUniqueID();
+  _maps[texEnv] = json;
+
+  translateObject(json.get(), texEnv);
+
+  osg::ref_ptr<JSONValue<std::string> > mode;
+  switch (texEnv->getMode())
+  {
+  case osg::TexEnv::DECAL:
+    mode = new JSONValue<std::string>("DECAL");
+    break;
+  case osg::TexEnv::MODULATE: 
+    mode = new JSONValue<std::string>("MODULATE");
+    break;
+  case osg::TexEnv::BLEND: 
+    mode = new JSONValue<std::string>("BLEND");
+    break;
+  case osg::TexEnv::REPLACE: 
+    mode = new JSONValue<std::string>("MODULATE");
+    break;
+  case osg::TexEnv::ADD: 
+    mode = new JSONValue<std::string>("BLEND");
+    break;
+  }
+
+  json->getMaps()["Mode"] = mode;
+  return json.release();
+}
+
 
 JSONObject* WriteVisitor::createJSONTexture(osg::Texture* texture)
 {
@@ -739,19 +798,29 @@ JSONObject* WriteVisitor::createJSONStateSet(osg::StateSet* stateset)
 
     osg::ref_ptr<JSONArray> textureAttributeList = new JSONArray;
     int lastTextureIndex = -1;
-    for (int i = 0; i < 32; ++i) {
-        osg::Texture* texture = dynamic_cast<osg::Texture*>(stateset->getTextureAttribute(i,osg::StateAttribute::TEXTURE));
-
-        JSONArray* textureUnit = new JSONArray;
-        JSONObject* jsonTexture = createJSONTexture(texture);
-        textureAttributeList->getArray().push_back(textureUnit);
-
-        if (jsonTexture) {
+    for (int i = 0; i < stateset->getNumTextureAttributeLists(); ++i) {
+      osg::Texture* texture = dynamic_cast<osg::Texture*>(stateset->getTextureAttribute(i,osg::StateAttribute::TEXTURE));
+      osg::TexEnv* texEnv = dynamic_cast<osg::TexEnv*>(stateset->getTextureAttribute(i,osg::StateAttribute::TEXENV));
+      if ( texture || texEnv )
+        {
+          JSONArray* textureUnit = new JSONArray;
+          JSONObject* jsonTexture = createJSONTexture(texture);
+          JSONObject* jsonTexEnv = createJSONTexEnv(texEnv);
+          textureAttributeList->getArray().push_back(textureUnit);
+          if (jsonTexture) {
             JSONObject* textureObject = new JSONObject;
             textureObject->getMaps()["osg.Texture"] = jsonTexture;
             textureUnit->getArray().push_back(textureObject);
-            lastTextureIndex = i;
-        }
+
+          }
+          if(jsonTexEnv)
+          {
+            JSONObject* obj = new JSONObject;
+            obj->getMaps()["osg.TexEnv"] = jsonTexEnv;
+            textureUnit->getArray().push_back(obj);
+          }
+        lastTextureIndex = i;
+      }
     }
     if (lastTextureIndex > -1) {
         textureAttributeList->getArray().resize(lastTextureIndex+1);
