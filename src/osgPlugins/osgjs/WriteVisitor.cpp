@@ -66,6 +66,9 @@ void translateObject(JSONObject* json, osg::Object* osg)
                 value = new JSONValue<std::string>(ss.str());
             }
             break;
+            case osgSim::ShapeAttribute::UNKNOWN:
+            default:
+                break;
             }
             jsonEntry->getMaps()["Value"] = value;
             jsonUDCArray->getArray().push_back(jsonEntry);
@@ -232,9 +235,18 @@ JSONObject* createImage(osg::Image* image, bool inlineImages, int maxTextureDime
         if (!image->getFileName().empty()) { // means that everything went ok
             if (inlineImages) {
 
-                std::ifstream in(osgDB::findDataFile(image->getFileName()).c_str());
-                if (in.is_open())
+                std::ifstream in(osgDB::findDataFile(image->getFileName()).c_str(), std::ifstream::in | std::ifstream::binary);
+                if (in.is_open() && in.good())
                 {
+                    // read file first to iterate
+                    in.seekg(0, std::ifstream::end);
+                    const std::ifstream::pos_type size = in.tellg();
+                    in.seekg(0, std::ifstream::beg);
+                    std::vector<unsigned char> rawData;
+                    rawData.resize(size);
+                    in.read(reinterpret_cast<char*>(rawData.data()),size);
+                    in.seekg(ios_base::beg);
+
                     std::stringstream out;
                     out << "data:image/" << osgDB::getLowerCaseFileExtension(image->getFileName()) << ";base64,";
                     base64::encode(std::istreambuf_iterator<char>(in),
@@ -261,9 +273,9 @@ JSONObject* WriteVisitor::createJSONBufferArray(osg::Array* array, osg::Geometry
     json->addUniqueID();
     _maps[array] = json;
     if(geom && _mergeAllBinaryFiles) {
-        setBufferName(json, geom);
+        setBufferName(json.get(), geom);
     }
-    return json;
+    return json.get();
 }
 
 JSONObject* WriteVisitor::createJSONDrawElementsUInt(osg::DrawElementsUInt* de, osg::Geometry* geom)
@@ -349,9 +361,9 @@ JSONObject* WriteVisitor::createJSONDrawArray(osg::DrawArrays* da, osg::Geometry
     json->addUniqueID();
     _maps[da] = json;
     if(geom && _mergeAllBinaryFiles) {
-        setBufferName(json, geom);
+        setBufferName(json.get(), geom);
     }
-    return json;
+    return json.get();
 }
 
 JSONObject* WriteVisitor::createJSONDrawArrayLengths(osg::DrawArrayLengths* da, osg::Geometry* geom)
@@ -363,9 +375,9 @@ JSONObject* WriteVisitor::createJSONDrawArrayLengths(osg::DrawArrayLengths* da, 
     json->addUniqueID();
     _maps[da] = json;
     if(geom && _mergeAllBinaryFiles) {
-        setBufferName(json, geom);
+        setBufferName(json.get(), geom);
     }
-    return json;
+    return json.get();
 }
 
 
@@ -382,15 +394,16 @@ JSONObject* WriteVisitor::createJSONGeometry(osg::Geometry* geom)
     _maps[geom] = json;
 
     if (geom->getStateSet())
-        createJSONStateSet(json, geom->getStateSet());
+        createJSONStateSet(json.get(), geom->getStateSet());
 
     translateObject(json.get(), geom);
 
     osg::ref_ptr<JSONObject> attributes = new JSONObject;
 
-    int nbVertexes = geom->getVertexArray()->getNumElements();
+    int nbVertexes = 0;
 
     if (geom->getVertexArray()) {
+        nbVertexes = geom->getVertexArray()->getNumElements();
         attributes->getMaps()["Vertex"] = createJSONBufferArray(geom->getVertexArray(), geom);
     }
     if (geom->getNormalArray()) {
@@ -439,9 +452,9 @@ JSONObject* WriteVisitor::createJSONGeometry(osg::Geometry* geom)
 
     if (!geom->getPrimitiveSetList().empty()) {
         osg::ref_ptr<JSONArray> primitives = new JSONArray();
-        for (unsigned int i = 0; i < geom->getPrimitiveSetList().size(); ++i) {
+        for (unsigned int i = 0; i < geom->getNumPrimitiveSets(); ++i) {
             osg::ref_ptr<JSONObject> obj = new JSONObject;
-            osg::PrimitiveSet* primitive = geom->getPrimitiveSetList()[i];
+            osg::PrimitiveSet* primitive = geom->getPrimitiveSet(i);
             if(!primitive) continue;
 
             if (primitive->getType() == osg::PrimitiveSet::DrawArraysPrimitiveType) {
@@ -477,7 +490,7 @@ JSONObject* WriteVisitor::createJSONGeometry(osg::Geometry* geom)
         }
         json->getMaps()["PrimitiveSetList"] = primitives;
     }
-    return json;
+    return json.get();
 }
 
 JSONObject* WriteVisitor::createJSONBlendFunc(osg::BlendFunc* sa)
@@ -633,7 +646,7 @@ JSONObject* WriteVisitor::createJSONPagedLOD(osg::PagedLOD *plod)
     // Range List
     //osg::ref_ptr<JSONArray> rangeList = new JSONArray;
     JSONObject* rangeObject = new JSONObject;
-    for (int i =0; i< plod->getRangeList().size(); i++)
+    for (unsigned int i =0; i< plod->getRangeList().size(); i++)
     {
         std::stringstream ss;
         ss << "Range ";
@@ -645,26 +658,37 @@ JSONObject* WriteVisitor::createJSONPagedLOD(osg::PagedLOD *plod)
     // File List
 
     JSONObject* fileObject = new JSONObject;
-    for (int i =0; i< plod->getNumFileNames(); i++)
+
+    for (unsigned int i =0; i< plod->getNumFileNames(); i++)
     {
         std::stringstream ss;
         ss << "File ";
         ss << i;
         std::string str = ss.str();
         // We need to convert first from osg format to osgjs format.
-        osg::ref_ptr<osg::Node> n = osgDB::readNodeFile(plod->getFileName(i)+".gles");
+        osg::ref_ptr<osg::Node> n = osgDB::readNodeFile(plod->getDatabasePath() + plod->getFileName(i)+".gles");
         if (n)
         {
-            std::string filename(osgDB::getStrippedName(plod->getFileName(i))+".osgjs");
-            osgDB::writeNodeFile(*n,filename);
-            fileObject->getMaps()[str] =  new JSONValue<std::string>(filename);
+            std::string filename(osgDB::getNameLessExtension(plod->getFileName(i))+".osgjs");
+
+            std::string fullFilePath(osgDB::getFilePath(_baseName) + osgDB::getNativePathSeparator() + filename);
+            fileObject->getMaps()[str] =  new JSONValue<std::string>(_baseLodURL + filename);
+            osgDB::makeDirectoryForFile(fullFilePath);
+            if (_baseLodURL.empty())
+                _baseLodURL = osgDB::getFilePath(filename) + osgDB::getNativePathSeparator() ;
+            osg::ref_ptr<osgDB::Options> options =  osgDB::Registry::instance()->getOptions()->cloneOptions();
+            options->setPluginStringData(std::string("baseLodURL"), _baseLodURL);
+
+            osgDB::writeNodeFile(*n,fullFilePath, options );
+
         }
         else
             fileObject->getMaps()[str] =  new JSONValue<std::string>("");
      }
+
     jsonPlod->getMaps()["RangeDataList"] = fileObject;
 
-    return jsonPlod;
+    return jsonPlod.get();
 }
 
 JSONObject* WriteVisitor::createJSONTexture(osg::Texture* texture)
@@ -689,7 +713,7 @@ JSONObject* WriteVisitor::createJSONTexture(osg::Texture* texture)
 
 
     {
-        JSONObject* obj = createImageFromTexture<osg::Texture1D>(texture, jsonTexture, this->_inlineImages,
+        JSONObject* obj = createImageFromTexture<osg::Texture1D>(texture, jsonTexture.get(), this->_inlineImages,
                                                                  this->_maxTextureDimension, this->_baseName);
         if (obj) {
             return obj;
@@ -697,7 +721,7 @@ JSONObject* WriteVisitor::createJSONTexture(osg::Texture* texture)
     }
 
     {
-        JSONObject* obj = createImageFromTexture<osg::Texture2D>(texture, jsonTexture, this->_inlineImages,
+        JSONObject* obj = createImageFromTexture<osg::Texture2D>(texture, jsonTexture.get(), this->_inlineImages,
                                                                  this->_maxTextureDimension, this->_baseName);
         if (obj) {
             return obj;
@@ -705,7 +729,7 @@ JSONObject* WriteVisitor::createJSONTexture(osg::Texture* texture)
     }
 
     {
-        JSONObject* obj = createImageFromTexture<osg::TextureRectangle>(texture, jsonTexture, this->_inlineImages,
+        JSONObject* obj = createImageFromTexture<osg::TextureRectangle>(texture, jsonTexture.get(), this->_inlineImages,
                                                                         this->_maxTextureDimension, this->_baseName);
         if (obj) {
             return obj;
@@ -795,7 +819,7 @@ JSONObject* WriteVisitor::createJSONStateSet(osg::StateSet* stateset)
             if (!cullFace) {
                 cullFace = new osg::CullFace();
             }
-            cf = createJSONCullFace(cullFace);
+            cf = createJSONCullFace(cullFace.get());
         }
         obj->getMaps()["osg.CullFace"] = cf;
         attributeList->getArray().push_back(obj);
@@ -823,4 +847,3 @@ JSONObject* WriteVisitor::createJSONStateSet(osg::StateSet* stateset)
         return 0;
     return jsonStateSet.release();
 }
-
