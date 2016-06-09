@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/jtorresfabra/osg.svg?branch=travis-add)](https://travis-ci.org/jtorresfabra/osg)
+
 Welcome to the OpenSceneGraph (OSG).
 
 For up-to-date information on the project, in-depth details on how to
